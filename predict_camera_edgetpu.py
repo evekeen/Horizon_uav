@@ -43,10 +43,10 @@ def get_horizon_line(border):
 def get_roll_pitch(m, c, image_height, image_width):
     """Get roll and pitch from horizon line equation"""
     # Convert slope (m) to roll degrees
-    roll = math.degrees(math.atan(m))
+    roll = -math.degrees(math.atan(m))
 
     # Get pitch
-    pitch = ((m*(image_width/2)+c)-(image_width/2))/(image_width/2)*100
+    pitch = -((m*(image_width/2)+c)-(image_width/2))/(image_width/2)*20
     
     return roll, pitch
 
@@ -78,8 +78,8 @@ output_details = interpreter.get_output_details()[0]
 
 # Load Video
 cap = cv2.VideoCapture(0)
-horizon = skvideo.io.FFmpegWriter("Result/ehorizon.mp4")
-ori = skvideo.io.FFmpegWriter("Result/horizon.mp4")
+horizon = skvideo.io.FFmpegWriter("Result/horizon.mp4")
+ori = skvideo.io.FFmpegWriter("Result/ori.mp4")
 while(cap.isOpened()):
     start_time = time.time()
     ret, frame = cap.read()
@@ -87,6 +87,7 @@ while(cap.isOpened()):
         image_height = frame.shape[0]
         image_width = frame.shape[1]
         frame = frame[0:image_height, (image_width-image_height)//2:(image_width-image_height)//2+image_height]
+        frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
         frame_ori = frame.copy()
         frame = cv2.resize(frame, image_size)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -120,7 +121,7 @@ while(cap.isOpened()):
         resized_image_width = frame.shape[1]
         roll, pitch = get_roll_pitch(m, c, resized_image_height, resized_image_width)
         
-        if mask_land[0,0]==1 or mask_land[0,224]==1:
+        if mask_land[0,0]==1 or mask_land[0,127]==1:
             if roll > 0:
                 roll = -180 + roll
             else:
@@ -139,9 +140,9 @@ while(cap.isOpened()):
         text_pitch = "pitch:" + str(round(pitch, 2)) + " degree"
         text_fps = "fps:" + str(round(fps))
 
-        cv2.putText(frame_ori, text_roll, (5, 15), 0, 0.5, (125, 0, 255), 2)
-        cv2.putText(frame_ori, text_pitch, (5, 35), 0, 0.5, (125, 0, 255), 2)
-        cv2.putText(frame_ori, text_fps, (5, 55), 0, 0.5, (125, 0, 255), 2)
+        cv2.putText(frame_ori, text_roll, (5, 25), 0, 0.8, (125, 0, 255), 2)
+        cv2.putText(frame_ori, text_pitch, (5, 55), 0, 0.8, (125, 0, 255), 2)
+        cv2.putText(frame_ori, text_fps, (5, 85), 0, 0.8, (125, 0, 255), 2)
 
         cv2.namedWindow("Horizon", cv2.WND_PROP_FULLSCREEN)
         cv2.setWindowProperty("Horizon", cv2.WND_PROP_FULLSCREEN, cv2.WND_PROP_FULLSCREEN)
