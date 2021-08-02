@@ -4,8 +4,8 @@ import os
 import sys
 
 filename = sys.argv[1]
-output_path = os.path.join("images")
-interval = 10
+output_path = os.path.join("image")
+interval = 1
 
 file_path = os.path.join(filename)
 cap = cv2.VideoCapture(file_path)

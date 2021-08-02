@@ -80,6 +80,10 @@ output_details = interpreter.get_output_details()[0]
 cap = cv2.VideoCapture(0)
 horizon = skvideo.io.FFmpegWriter("Result/horizon.mp4")
 ori = skvideo.io.FFmpegWriter("Result/ori.mp4")
+
+prev_roll = 0
+prev_pitch =0
+
 while(cap.isOpened()):
     start_time = time.time()
     ret, frame = cap.read()
@@ -88,6 +92,7 @@ while(cap.isOpened()):
         image_width = frame.shape[1]
         frame = frame[0:image_height, (image_width-image_height)//2:(image_width-image_height)//2+image_height]
         frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        frame_horizon = frame.copy()
         frame_ori = frame.copy()
         frame = cv2.resize(frame, image_size)
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -126,12 +131,30 @@ while(cap.isOpened()):
                 roll = -180 + roll
             else:
                 roll = 180 + roll
+        
+        # Filter data
+        if abs(roll-prev_roll) >= 25:
+            roll = prev_roll
+        elif abs(roll-prev_roll) >= 10:
+            roll = roll*0.5+prev_roll*0.5
+            prev_roll = roll
+        else:
+            prev_roll = roll
+        
+        if abs(pitch-prev_pitch) >= 25:
+            pitch = prev_pitch
+        elif abs(pitch-prev_pitch) >= 10:
+            pitch = pitch*0.5+prev_pitch*0.5
+            prev_pitch = pitch
+        else:
+            prev_pitch = pitch
 
+        # Send data to FC
         protocol.send_attitude(roll, pitch)
 
-        #frame_ori = cv2.resize(frame_ori, (480, 480))
+        #frame_horizon = cv2.resize(frame_horizon, (480, 480))
         scale = image_height/image_size[0]
-        frame_ori = draw_horizon_line(frame_ori, m, c, scale)
+        frame_horizon = draw_horizon_line(frame_horizon, m, c, scale)
 
         # FPS
         fps = 1.0/(time.time() - start_time)
@@ -140,17 +163,17 @@ while(cap.isOpened()):
         text_pitch = "pitch:" + str(round(pitch, 2)) + " degree"
         text_fps = "fps:" + str(round(fps))
 
-        cv2.putText(frame_ori, text_roll, (5, 25), 0, 0.8, (125, 0, 255), 2)
-        cv2.putText(frame_ori, text_pitch, (5, 55), 0, 0.8, (125, 0, 255), 2)
-        cv2.putText(frame_ori, text_fps, (5, 85), 0, 0.8, (125, 0, 255), 2)
+        cv2.putText(frame_horizon, text_roll, (5, 25), 0, 0.8, (125, 0, 255), 2)
+        cv2.putText(frame_horizon, text_pitch, (5, 55), 0, 0.8, (125, 0, 255), 2)
+        cv2.putText(frame_horizon, text_fps, (5, 85), 0, 0.8, (125, 0, 255), 2)
 
         cv2.namedWindow("Horizon", cv2.WND_PROP_FULLSCREEN)
         cv2.setWindowProperty("Horizon", cv2.WND_PROP_FULLSCREEN, cv2.WND_PROP_FULLSCREEN)
-        cv2.imshow("Horizon", frame_ori)
+        cv2.imshow("Horizon", frame_horizon)
         # cv2.imshow("Land", mask_land)
         # cv2.imshow("Border", border)
-        horizon.writeFrame(frame_ori[:,:,::-1])
-        ori.writeFrame(frame[:,:,::-1])
+        horizon.writeFrame(frame_horizon[:,:,::-1])
+        ori.writeFrame(frame_ori[:,:,::-1])
         
         if cv2.waitKey(25) & 0xFF == ord('q'):
             break
