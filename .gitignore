@@ -140,3 +140,4 @@ dmypy.json
 dataset_export.json
 *.png
 .DS_Store
+model/yolov8n-seg.pt
