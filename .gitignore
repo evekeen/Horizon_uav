@@ -138,3 +138,5 @@ dmypy.json
 /dataset_original
 /prediction
 dataset_export.json
+*.png
+.DS_Store

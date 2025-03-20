@@ -12,16 +12,21 @@ from pathlib import Path
 # physical_devices = tf.config.list_physical_devices('GPU')
 # tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
-def get_border(mask_land, mask_sky):
-    """Get horizon border image from land and sky mask"""
+def get_border(mask_land, mask_sky, people_mask=None):
+    """Get horizon border image from land and sky mask, ignoring areas with people if provided"""
     # Convert Colorspace to Grayscale
     mask_land = mask_land[:,:]
     mask_sky = mask_sky[:,:]
+    
     # Get Horizon Border Using Dilation and Bitwise AND
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(2,2))
     land_dilated = cv2.dilate(mask_land, kernel)
     sky_dilated = cv2.dilate(mask_sky, kernel)
     border = cv2.bitwise_and(land_dilated, sky_dilated)
+    
+    if people_mask is not None:
+        people_mask = people_mask.astype(np.uint8)
+        border[people_mask > 0] = 0
 
     return border
 
@@ -43,15 +48,39 @@ def get_horizon_line(border):
     X = np.vstack([x, np.ones(len(x))]).T
     m, c = np.linalg.lstsq(X, y, rcond=None)[0]
 
-    plt.figure(figsize=(5, 5))
-    plt.scatter(x, y, label='Border Data')
-    x = np.linspace(0, 224, 1000)
-    y = m*x+c
-    #plt.plot(x, y, '-r', label='Regression Line (y=m*x+c)')
-    plt.legend(loc='upper left')
-    plt.xlim(0, 224)
-    plt.ylim(224, 0)
-    plt.show()
+    # Create a figure with two subplots (one for the border data/regression, one for original image)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(8, 10))
+    
+    # Plot border data and regression line in the top subplot
+    ax1.scatter(x, y, label='Border Data')
+    x_line = np.linspace(0, 224, 1000)
+    y_line = m*x_line+c
+    ax1.plot(x_line, y_line, '-r', label='Regression Line (y=m*x+c)')
+    ax1.legend(loc='upper left')
+    ax1.set_xlim(0, 224)
+    ax1.set_ylim(224, 0)
+    ax1.set_title('Horizon Border Data and Regression Line')
+    
+    # If we have access to the original image, display it in the bottom subplot
+    # Need to create a global variable to store the original frame for display
+    if 'frame_for_display' in globals():
+        # Display the original image in the bottom subplot
+        ax2.imshow(cv2.cvtColor(frame_for_display.copy(), cv2.COLOR_BGR2RGB))
+        ax2.set_xlim(0, 224)
+        ax2.set_ylim(224, 0)
+        ax2.set_title('Original Image')
+        
+        # Draw the horizon line on the original image subplot
+        ax2.plot(x_line, y_line, '-r', linewidth=2)
+    else:
+        ax2.text(0.5, 0.5, 'Original image not available', 
+                horizontalalignment='center', verticalalignment='center')
+        
+    plt.tight_layout()
+    # Save the figure instead of showing it
+    plt.savefig('horizon_with_original_image.png')
+    print("Saved visualization to 'horizon_with_original_image.png'")
+    plt.close()
     
     return m, c
 
@@ -70,10 +99,18 @@ def draw_horizon_line(img, m, c, scale):
     image_height = img.shape[0]
     image_width = img.shape[1]
 
-    c = scale*c
-
-    pt1 = (0, int(m*0+c))
-    pt2 = (image_width, int(m*image_width+c))
+    # Scale the y-intercept
+    c = scale * c
+    # The slope m needs to be scaled inversely to width scaling
+    # Since the x and y axes have different scaling factors
+    width_scale = image_width / 224  # 224 is the width of the resized image used for prediction
+    
+    # Calculate scaled slope: maintain the same angle in the larger image
+    scaled_m = m / width_scale * scale
+    
+    # Calculate line points with the scaled parameters
+    pt1 = (0, int(scaled_m * 0 + c))
+    pt2 = (image_width, int(scaled_m * image_width + c))
 
     cv2.line(img, pt1, pt2, (125, 0, 255), 2)
 
@@ -99,7 +136,7 @@ def dice_loss(y_true, y_pred, num_classes=2):
 # Parameter
 image_size = (224, 224)
 model_path = os.path.join("model", "model-unet.h5")
-image_path = os.path.join("golf4.jpg")
+image_path = os.path.join("golf2.jpg")
 yolo_model_path = os.path.join("model", "yolov8n-seg.pt")
 
 # Download YOLOv8 model if it doesn't exist
@@ -164,9 +201,6 @@ frame_ori = frame.copy()
 # Detect people before resizing for horizon detection
 people_mask = detect_people(frame_ori, yolo_model)
 
-# Display people mask
-cv2.imshow("People Detected", people_mask)
-
 # Resize and prepare image for horizon detection
 frame = cv2.resize(frame, image_size)
 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -189,7 +223,7 @@ people_mask_resized = cv2.resize(people_mask, image_size)
 people_mask_resized = people_mask_resized > 0
 
 # Expand the people mask using dilation to create a buffer zone
-dilation_kernel_size = 15  # Adjust this value to control how much to expand the mask
+dilation_kernel_size = 8 # Adjust this value to control how much to expand the mask
 dilation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel_size, dilation_kernel_size))
 people_mask_expanded = cv2.dilate(people_mask_resized.astype(np.uint8), dilation_kernel, iterations=1)
 
@@ -201,16 +235,20 @@ cv2.imshow("Expanded People Mask", people_mask_expanded_viz)
 mask_land[people_mask_expanded > 0] = 0
 mask_sky[people_mask_expanded > 0] = 0
 
-# Post Process
+# Post Process with people mask considered in border calculation
 mask_land = cv2.cvtColor(mask_land, cv2.COLOR_BGR2GRAY)
 mask_sky = cv2.cvtColor(mask_sky, cv2.COLOR_BGR2GRAY)
 
-border = get_border(mask_land, mask_sky)
+border = get_border(mask_land, mask_sky, people_mask_expanded)
+
+# Set the frame_for_display global variable for use in get_horizon_line
+global frame_for_display
+frame_for_display = cv2.resize(frame.copy(), image_size)
+
 m, c = get_horizon_line(border)
 
 resized_image_height = frame.shape[0]
 resized_image_width = frame.shape[1]
-print(resized_image_height, resized_image_width)
 roll, pitch = get_roll_pitch(m, c, resized_image_height, resized_image_width)
 
 if mask_land[0,0]==1 or mask_land[0,223]==1:
@@ -219,10 +257,7 @@ if mask_land[0,0]==1 or mask_land[0,223]==1:
     else:
         roll = 180 + roll
 
-#frame_ori = cv2.resize(frame_ori, (480, 480))
 scale = image_height/image_size[0]
-cv2.imshow("Original", frame_ori)
-
 frame_ori = draw_horizon_line(frame_ori, m, c, scale)
 
 text_roll = "roll:" + str(round(roll, 2)) + " degree"
@@ -231,8 +266,9 @@ text_pitch = "pitch:" + str(round(pitch, 2)) + " %"
 cv2.putText(frame_ori, text_roll, (5, 15), 0, 0.5, (125, 0, 255), 2)
 cv2.putText(frame_ori, text_pitch, (5, 35), 0, 0.5, (125, 0, 255), 2)
 
-cv2.imshow("Horizon", frame_ori)
-cv2.imshow("Land", mask_land)
-cv2.imshow("Border", border)
+# Save the output images instead of displaying them
+cv2.imwrite('horizon.png', frame_ori)
+cv2.imwrite('land_mask.png', mask_land * 255)
+cv2.imwrite('border.png', border * 255)
 
-cv2.waitKey(0)
+print("Saved images: 'horizon.png', 'land_mask.png', 'border.png'")
