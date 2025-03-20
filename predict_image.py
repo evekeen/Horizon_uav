@@ -4,10 +4,13 @@ import numpy as np
 import os
 import math
 import matplotlib.pyplot as plt
+import torch
+import requests
+from pathlib import Path
 
 # Enable GPU Memory Growth
-physical_devices = tf.config.list_physical_devices('GPU')
-tf.config.experimental.set_memory_growth(physical_devices[0], True)
+# physical_devices = tf.config.list_physical_devices('GPU')
+# tf.config.experimental.set_memory_growth(physical_devices[0], True)
 
 def get_border(mask_land, mask_sky):
     """Get horizon border image from land and sky mask"""
@@ -96,17 +99,75 @@ def dice_loss(y_true, y_pred, num_classes=2):
 # Parameter
 image_size = (224, 224)
 model_path = os.path.join("model", "model-unet.h5")
-image_path = os.path.join("sample3.jpg")
+image_path = os.path.join("golf4.jpg")
+yolo_model_path = os.path.join("model", "yolov8n-seg.pt")
 
-# Load model
+# Download YOLOv8 model if it doesn't exist
+def download_yolo_model(model_path):
+    if not os.path.exists(model_path):
+        print(f"Downloading YOLOv8 model to {model_path}...")
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        url = "https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n-seg.pt"
+        with open(model_path, 'wb') as f:
+            response = requests.get(url, stream=True)
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        print("Download complete.")
+
+# Function to detect people in image and create a mask
+def detect_people(image, yolo_model):
+    """Detect people in the image and return a mask where people are present"""
+    # Make a prediction with the model
+    results = yolo_model(image)
+    
+    # Create an empty mask with the same size as the input image
+    people_mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    
+    # Process results
+    for result in results:
+        # Check if there are any detections
+        if len(result.boxes) > 0:
+            # Get all person class detections (class 0 in COCO dataset is person)
+            person_indices = [i for i, cls in enumerate(result.boxes.cls.cpu().numpy()) if cls == 0]
+            
+            # If any people were detected
+            if person_indices and hasattr(result, 'masks') and result.masks is not None:
+                # Get masks for people
+                for idx in person_indices:
+                    if idx < len(result.masks):
+                        # Get the mask for this person
+                        mask = result.masks[idx].data.cpu().numpy()[0]
+                        mask = (mask > 0).astype(np.uint8) * 255
+                        mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
+                        people_mask = cv2.bitwise_or(people_mask, mask)
+    
+    return people_mask
+
+# Load horizon detection model
 model = tf.keras.models.load_model(model_path, custom_objects={'dice_loss': dice_loss, 'MaxMeanIoU': MaxMeanIoU})
 
-# Load Video
+# Load and prepare YOLOv8 model
+download_yolo_model(yolo_model_path)
+try:
+    yolo_model = torch.hub.load('ultralytics/yolov8', 'custom', path=yolo_model_path, verbose=False)
+except:
+    # Alternative method if torch.hub doesn't work
+    from ultralytics import YOLO
+    yolo_model = YOLO(yolo_model_path)
+
+# Load image
 frame = cv2.imread(image_path)
 image_height = frame.shape[0]
 image_width = frame.shape[1]
-frame = frame[0:image_height, (image_width-image_height)//2:(image_width-image_height)//2+image_height]
 frame_ori = frame.copy()
+
+# Detect people before resizing for horizon detection
+people_mask = detect_people(frame_ori, yolo_model)
+
+# Display people mask
+cv2.imshow("People Detected", people_mask)
+
+# Resize and prepare image for horizon detection
 frame = cv2.resize(frame, image_size)
 frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 frame = cv2.normalize(frame, None, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
@@ -123,6 +184,23 @@ mask[mask < 0.5] = 0
 mask_land = mask[:, :, 0]
 mask_sky = mask[:, :, 1]
 
+# Resize people mask to match the processed image size
+people_mask_resized = cv2.resize(people_mask, image_size)
+people_mask_resized = people_mask_resized > 0
+
+# Expand the people mask using dilation to create a buffer zone
+dilation_kernel_size = 15  # Adjust this value to control how much to expand the mask
+dilation_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilation_kernel_size, dilation_kernel_size))
+people_mask_expanded = cv2.dilate(people_mask_resized.astype(np.uint8), dilation_kernel, iterations=1)
+
+# Create a copy of the expanded mask for visualization
+people_mask_expanded_viz = people_mask_expanded.copy() * 255
+cv2.imshow("Expanded People Mask", people_mask_expanded_viz)
+
+# Remove people from land and sky masks using the expanded mask
+mask_land[people_mask_expanded > 0] = 0
+mask_sky[people_mask_expanded > 0] = 0
+
 # Post Process
 mask_land = cv2.cvtColor(mask_land, cv2.COLOR_BGR2GRAY)
 mask_sky = cv2.cvtColor(mask_sky, cv2.COLOR_BGR2GRAY)
@@ -132,9 +210,10 @@ m, c = get_horizon_line(border)
 
 resized_image_height = frame.shape[0]
 resized_image_width = frame.shape[1]
+print(resized_image_height, resized_image_width)
 roll, pitch = get_roll_pitch(m, c, resized_image_height, resized_image_width)
 
-if mask_land[0,0]==1 or mask_land[0,224]==1:
+if mask_land[0,0]==1 or mask_land[0,223]==1:
     if roll > 0:
         roll = -180 + roll
     else:
